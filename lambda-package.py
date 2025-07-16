@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 def lambda_handler(event, context):
     regions = ['ap-south-1', 'us-east-1', 'ap-northeast-1','us-west-1']
-    sender = "dhaarun25052004@gmail.com"
-    recipient = "mikeyram35@gmail.com"
+    sender = "dhaarun25052004@gmail.com" //Add the Sender mail here
+    recipient = "mikeyram35@gmail.com" //Add the receiver mail here
     subject = "EC2 Daily Automation Summary"
 
     # Get AWS Account ID

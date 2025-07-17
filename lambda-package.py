@@ -1,68 +1,79 @@
 import boto3
-from botocore.exceptions import ClientError
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 def lambda_handler(event, context):
-    regions = ['ap-south-1', 'us-east-1', 'ap-northeast-1','us-west-1']
-    sender = "dhaarun25052004@gmail.com" //Add the Sender mail here
-    recipient = "mikeyram35@gmail.com" //Add the receiver mail here
-    subject = "EC2 Daily Automation Summary"
+    sender = "dhaarun25052004@gmail.com"
+    recipient = "mikeyram35@gmail.com"
+    aws_regions = ['ap-south-1', 'us-east-1', 'ap-northeast-1']
 
-    # Get AWS Account ID
-    sts = boto3.client('sts')
-    account_id = sts.get_caller_identity()['Account']
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    subject = f"EC2 Instance Action Summary - {current_time}"
 
-    # Manually define IST timezone (UTC+5:30)
-    ist_offset = timedelta(hours=5, minutes=30)
-    ist_time = datetime.now(timezone.utc) + ist_offset
-    current_time = ist_time.strftime('%Y-%m-%d %H:%M:%S IST')
+    all_instances = []
 
-    summary_rows = []
-
-    for region in regions:
+    for region in aws_regions:
         ec2 = boto3.client('ec2', region_name=region)
-        response = ec2.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
+        response = ec2.describe_instances()
 
-        for reservation in response['Reservations']:
-            for instance in reservation['Instances']:
+        for reservation in response.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
                 instance_id = instance['InstanceId']
-                instance_type = instance.get('InstanceLifecycle', 'on-demand')
+                state = instance['State']['Name']
+                instance_type = instance.get('InstanceType', 'N/A')
+                launch_time = instance.get('LaunchTime', 'N/A')
                 name_tag = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), 'N/A')
 
-                if instance_type == 'spot':
-                    ec2.terminate_instances(InstanceIds=[instance_id])
-                    action = "Terminated"
-                else:
-                    ec2.stop_instances(InstanceIds=[instance_id])
-                    action = "Stopped"
+                if state in ['running', 'stopped']:
+                    action_taken = None
+                    if state == 'running':
+                        ec2.stop_instances(InstanceIds=[instance_id])
+                        action_taken = 'Stopped'
+                    elif state == 'stopped':
+                        ec2.terminate_instances(InstanceIds=[instance_id])
+                        action_taken = 'Terminated'
 
-                summary_rows.append([instance_id, name_tag, region, instance_type, action])
+                    all_instances.append({
+                        'Region': region,
+                        'Instance ID': instance_id,
+                        'Name': name_tag,
+                        'Type': instance_type,
+                        'State': state,
+                        'Action': action_taken,
+                        'Launch Time': str(launch_time)
+                    })
 
-    # Compose Email Body
-    body = f"EC2 Automation Summary\nAWS Account ID: {account_id}\nTime of Execution: {current_time}\n\n"
+    if all_instances:
+        # Construct a plain text table
+        header = f"{'Region':<15} {'Instance ID':<20} {'Name':<20} {'Type':<10} {'State':<10} {'Action':<10} {'Launch Time'}\n"
+        header += "-" * 110 + "\n"
+        rows = ""
+        for inst in all_instances:
+            rows += f"{inst['Region']:<15} {inst['Instance ID']:<20} {inst['Name']:<20} {inst['Type']:<10} {inst['State']:<10} {inst['Action']:<10} {inst['Launch Time']}\n"
 
-    if summary_rows:
-        body += "The following EC2 instances were stopped or terminated:\n\n"
-        body += "{:<20} {:<20} {:<15} {:<15} {}\n".format("Instance ID", "Instance Name", "Region", "Instance Type", "Action")
-        body += "-" * 85 + "\n"
-        for row in summary_rows:
-            body += "{:<20} {:<20} {:<15} {:<15} {}\n".format(*row)
-    else:
-        body += "No EC2 instances were in the running state across the mentioned regions. All instances are already stopped."
-
-    # Send Email using SES
-    ses = boto3.client('ses', region_name='ap-south-1')
-    try:
-        ses.send_email(
-            Source=sender,
-            Destination={'ToAddresses': [recipient]},
-            Message={
-                'Subject': {'Data': subject},
-                'Body': {'Text': {'Data': body}}
-            }
+        body = (
+            f"Hello,\n\n"
+            f"The following EC2 instances were processed on {current_time}:\n\n"
+            f"{header}{rows}\n"
+            "Regards,\nYour AWS Automation"
         )
-    except ClientError as e:
-        print(e.response['Error']['Message'])
-        raise e
+    else:
+        body = f"No running or stopped EC2 instances found across specified regions as of {current_time}."
 
-    return {"status": "Completed"}
+    # Send the email
+    ses = boto3.client('ses', region_name='us-east-1')  # Change if using SES in a different region
+    response = ses.send_email(
+        Source=sender,
+        Destination={'ToAddresses': [recipient]},
+        Message={
+            'Subject': {'Data': subject},
+            'Body': {
+                'Text': {'Data': body}
+            }
+        }
+    )
+
+    print("SES response:", response)
+    return {
+        'statusCode': 200,
+        'body': 'Email sent successfully' if response['ResponseMetadata']['HTTPStatusCode'] == 200 else 'Failed to send email'
+    }
